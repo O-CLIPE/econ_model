@@ -8,8 +8,6 @@ def access_info():
     host = "localhost"; print(host)
     user = "root"; print(user)
     password = getpass("password: ")
-
-
 access_info()
 
 def query_schema():
@@ -24,175 +22,162 @@ def query_schema():
                 cursor.execute(query.read(), multi=True)
 query_schema()
 
-                    # 2. Entity functions
-def create_entity(name, **kwargs) -> int:
-    # keywords -> name, income, expenses, value
+                    # 2. Generalization
+def create_func(table: str, ordered_not_null_variables: tuple[str], *args, **kwargs) -> int:
+    """Insert data into the market.{table} table.
+    
+    Query an INSERT statement with information provided by the arguments
+    personalized for {table}
+    Only kwargs isn't required.
+
+    Keyword arguments:
+    table: The table in wich to insert info.
+    ordered_not_null_variables: Keys that can't be null in kwargs. Ordered for the purpose of args
+    args: Information especified in ordered_not_null_variable declared in the same order.
+    kwargs: Information especified with a key.
+    """
     with mysql.connector.connect(host=host, user=user, password=password) as database:
-        kwargs['name'] = name
-        keys, values = list(), list(); 
 
-        for key, value in kwargs.items():
-            keys.append(key)
-            values.append(value)
+        for idx, var in enumerate(ordered_not_null_variables):
+            kwargs[var] = args[idx - 1]
 
-        keys = repr(keys); 
-        values = repr(values)
-
-        keys = keys[1:-1]; 
-        keys = keys.replace("'", "`")
-        values = values[1:-1] 
-
-        query = f"INSERT INTO `market`.`entity` ({keys}) VALUES ({values});"
+        query = insert(table, kwargs)
         with database.cursor() as cursor:
             cursor.execute(query)
             database.commit()
         
         with database.cursor() as cursor:
-            cursor.execute(f"SELECT `entity_id` FROM `market`.`entity` WHERE `name`={repr(name)}")
+            print({key: value for key, value in kwargs.items() if key in ordered_not_null_variables})
+            cursor.execute(select(table, {key: value for key, value in kwargs.items() if key in ordered_not_null_variables}, (f'{table}_id',)))
             return cursor.fetchone()[0]
 
-def set_entity(identifier=None, **kwargs):
-    # identifier -> name or id
-    # keywords -> income, expenses, value
+def get_func(table: str, where={}, info=()) -> dict | list[tuple] | None:
+    """Get information from the database related to the market.{table} table.
+    
+    If identification is given, return dict from a single {table}.
+    Else return a list containing one tuple for each matching {table}.
+    If there are no arguments (besides table), print all entities information in file.
+
+    Keyword arguments:
+    table: The table in wich to get info from.
+    where: Identification* or a common info** from entities. *int | str, return dict. **dict, return a list.
+    info: What you want from the entities that where specifies.
+    """
+    if not isinstance(info, tuple):
+        info = tuple((info,))
     with mysql.connector.connect(host=host, user=user, password=password) as database:
-        query = ["UPDATE `market`.`entity` SET "]
-
-        for key, value in kwargs.copy().items():
-            if value is None:
-                del kwargs[key]
-            elif key == 'entity_id':
-                del kwargs[key]
-                identifier = value
-
-        for idx, [key, value] in enumerate(kwargs.items()):
-            query.append(f"`{key}` = {repr(value)} ")
-            if len(kwargs) != idx + 1:
-                query.append(", ") 
-
-        if isinstance(identifier, str):
-            query.append(f"WHERE `name` = {repr(identifier)};")
-        else:
-            query.append(f"WHERE `entity_id` = {repr(identifier)};")
-
-        query = "".join(query)
-
-        with database.cursor() as cursor:
-            cursor.execute(query)
-            database.commit()
-            
-def get_entity(*columns, where=None) -> int | dict | list:
-    # columns -> id, name, income, expenses, value
-    with mysql.connector.connect(host=host, user=user, password=password) as database:
-        query = ["SELECT "]
-        if not columns: 
-            query.append("* ")
-        else:
-            for idx, value in enumerate(columns):
-                query.append(f"`{value}` ")
-                if len(columns) != idx + 1:
-                    query.append(", ")
-        query.append("FROM `market`.`entity` ")
-
-        if where is None:
-            query = "".join(query)
-            with database.cursor() as cursor:
+        if not where and not info:
+            query = select(table)
+            with database.cursor(dictionary=True) as cursor:
                 cursor.execute(query)
-                result = cursor.fetchall()
-                print_in_file("database", result, 27)
+                foo = cursor.fetchall()
+                headings = tuple([key for key in foo[0]])
+                result = []
+                for d in foo:
+                    result.append(tuple([v for v in d.values()]))
+                print_in_file(table, result, 27, headings)
         elif isinstance(where, int):
-            query.append(f"WHERE `entity_id` = {where}; ")
-            query = "".join(query)
+            query = select(table, {f'{table}_id': where}, info)
             with database.cursor(dictionary=True) as cursor:
                 cursor.execute(query)
                 return cursor.fetchone()
         elif isinstance(where, str):
-            query.append(f"WHERE `name` = {repr(where)}; ")
-            query = "".join(query)
-            with database.cursor() as cursor:
+            query = select(table, {'name': where}, info)
+            with database.cursor(dictionary=True) as cursor:
                 cursor.execute(query)
-                return cursor.fetchone()[0]
+                return cursor.fetchone()
         elif isinstance(where, dict):
-            query.append(" WHERE ")
-            for idx, [key, value] in enumerate(where.items()):
-                query.append(f"`{key}` = {repr(value)} ")
-                if len(where) != idx + 1:
-                    query.append("AND ")
-            query = "".join(query)
+            query = select(table, where, info)
             with database.cursor() as cursor:
                 cursor.execute(query)
                 result = cursor.fetchall()
                 return result
 
 
+def set_func(table: str, identifier: str | int = None, **kwargs):
+    """Set information in the database to the market.{table} table.
+    
+    Query an UPDATE statement with information provided by the arguments
+    personalized for {table}
+    All arguments are REQUIRED.
 
-                    # 3.Product funcitons
-def create_product(producer_id: int, good_id: int, **kwargs):
-    # keywords -> name, income, expenses, value
+    Keyword arguments:
+    table: The table in wich to set info to.
+    identifier: 'name' if string, '{table}_id' if int.
+    kwargs: The information to update the table.
+    """
     with mysql.connector.connect(host=host, user=user, password=password) as database:
-        kwargs['producer_id'] = producer_id
-        kwargs['good_id'] = good_id
+        for key, value in kwargs.copy().items():
+            if value is None:
+                del kwargs[key]
+            elif key == f'{table}_id':
+                del kwargs[key]
+                identifier = value
 
-        keys, values = list(), list(); 
+        if isinstance(identifier, str):
+            type_ = 'name'
+        else:
+            type_ = f'{table}_id'
 
-        for key, value in kwargs.items():
-            if isinstance(value, int):
-                value = float(value)
-            keys.append(key)
-            values.append(value)
-
-        keys_repr = repr(keys)[1:-1].replace("'", "`"); 
-        values_repr = repr(values)[1:-1]
-
-        query = f"INSERT INTO `market`.`product` ({keys_repr}) VALUES ({values_repr});"
+        print(identifier)
+        query = update(table, kwargs, {type_: identifier})
         with database.cursor() as cursor:
             cursor.execute(query)
             database.commit()
 
+                    # 3.Table/Class especific
+def create_entity(name, **kwargs) -> int:
+    """Call create_func with table='entity'.
+
+    Keywords -> name, income, expenses, value"""
+    create_func('entity', ('name',), name, **kwargs)
+
+def set_entity(identifier: int | str = None, **kwargs):
+    # identifier -> name or id
+    # keywords -> income, expenses, value
+    set_func('entity', identifier, **kwargs)
+            
+def get_entity(where={}, info=()) -> dict | list | None:
+    # columns -> id, name, income, expenses, value
+    get_func('entity', where, info)
 
 
-                    # 4.Good functions
+def create_product(producer_id: int, good_id: int, **kwargs):
+    """Call create_func with table='entity'.
+
+    Keywords -> name, income, expenses, value"""
+    # keywords -> name, income, expenses, value
+    create_func('product', ('producer_id', 'good_id'), producer_id, good_id, **kwargs)
+
+def set_product(identifier: int | str, **kwargs):
+    # identifier -> name or id
+    # keywords -> name, value, price, supply
+    set_func('product', identifier, **kwargs)
+
+def get_product(where={}, info=()) -> dict | list | None:
+    # columns -> good_id, entity_id, id, name, value, price, supply
+    get_func('product', where, info)
+
+
 def create_good(name: str, **kwargs):
     # keywords -> name, value, price
-    with mysql.connector.connect(host=host, user=user, password=password) as database:
-        kwargs['name'] = name
+   create_func('good', ('name',), name, **kwargs)
 
-        keys, values = list(), list()
-        for key, value in kwargs.items():
-            if isinstance(value, int):
-                value = float(value)
-            keys.append(repr(key).replace("'", "`"))
-            values.append(repr(value))
+def set_good(identifier: int | str, **kwargs):
+    # identifier -> name or id
+    # keywords -> name, price
+    set_func('product', identifier, **kwargs)
 
-        keys = ", ".join(keys)
-        values = ", ".join(values)
-        query = [f"INSERT INTO `market`.`good` ({keys}) VALUES ({values});"]
-
-        with database.cursor() as cursor:
-            cursor.execute(query)
-            database.commit()
-
-def get_good_id(**kwargs) -> list | None:
-    # keywords -> id, name, income, expenses, value
-    with mysql.connector.connect(host=host, user=user, password=password) as database:
-        query = ["SELECT `entity_id`, `name` FROM `market`.`entity` WHERE "]
-        for idx, [key, value] in enumerate(kwargs.items()):
-            query.append(f"`{key}` = {repr(value)} ")
-            if len(kwargs) != idx + 1:
-                query.append("AND ")
-
-        query = "".join(query)
-
-        with database.cursor() as cursor:
-            cursor.execute(query)
-            result = cursor.fetchall()
-            return result
+def get_good(where={}, info=()) -> dict | list[tuple] | None:
+    # columns -> id, name, income, expenses, value
+    get_func('good', where, info)
 
 
-
-                    # 5.Utility
-def print_in_file(filename: str, data: list, column_size_limit: int, headings=['entity_id', 'name', 'income', 'expenses', 'value']):
-    with open(f"{filename}.dbr", "w") as f:
-        f.write("-- This was an automatically generated file. --\nDatabase data: ")
+                    # 4.Representation of data in file
+def print_in_file(filename: str, data: list, column_size_limit: int, headings: tuple):
+    """Writes in filename.dbtxt the data with headings and custom column_size"""
+    with open(f"{filename}.dbtxt", "w") as f:
+        f.write("-- This was an automatically generated file. --\nData: ")
         for idx, head in enumerate(headings):
             f.write(f"{head}")
             if idx != len(headings) - 1:
@@ -212,6 +197,7 @@ def print_in_file(filename: str, data: list, column_size_limit: int, headings=['
             f.write('\n')
 
 def abbreviate(text: str, limit: int) -> str:
+    """Abbreviate text to fit in limit."""
     abbv = str(text)
     for (old, new) in (("Incorporated", "Inc."), ("Company", "Co."), ("Limited", "Ltd."),
         ("Association", "Assoc."), ("Brothers", "Bros."), ("Compagnie", "Cie."),
@@ -233,3 +219,59 @@ def abbreviate(text: str, limit: int) -> str:
     elif len(abbv) > limit:
         abbv = f"{text[:limit - 1]}."
     return abbv[:limit]
+
+
+                    # 5.TO SQL
+def select(table: str, condition: dict = {}, columns: tuple = ()) -> str:
+    """Create a SELECT statement in SQL for querying."""
+    query = ["SELECT", None, "FROM", None, "WHERE", None, ";"]
+    temp = []
+    if not columns:
+        query[1] = "*"
+    else:
+        for column in columns:  
+            temp.append(f"`{column}`")
+        query[1] = ", ".join(temp)
+    query[3] = f"`market`.`{table}`"
+    temp.clear()
+    if not condition:
+        query[4:6] = "", ""
+    else:
+        for key, value in condition.items():
+            temp.append(f"`{key}` = {value!r}")
+        query[5] = ", ".join(temp)
+
+    return " ".join(query)
+
+def insert(table: str, info: dict) -> str:
+    """Create an INSERT statement in SQL for querying."""
+    query = ["INSERT INTO", None, None, "VALUES", None, ";"]
+
+    query[1] = f"`market`.`{table}`"
+    keys, values = [], []
+    for key, value in info.items():
+        keys.append(f"`{key}`")
+        values.append(repr(value))
+
+    query[2] = f"""({", ".join(keys)})"""
+    query[4] = f"""({", ".join(values)})"""
+    return " ".join(query)
+
+
+def update(table: str, info: dict, condition: dict = {}) -> str:
+    """Create an UPDATE statement in SQL for querying."""
+    query = ["UPDATE", None, "SET", None, "WHERE", None, ";"]
+
+    query[1] = f"`market`.`{table}`"
+    temp = []
+    for key, value in info.items():
+        temp.append(f"`{key}` = {repr(value)}")
+    query[3] = ", ".join(temp)
+    temp.clear()
+    if not condition:
+        query[4:6] = "", ""
+    else:
+        for key, value in condition.items():
+            temp.append(f"`{key}` = {repr(value)}")
+        query[5] = ", ".join(temp)
+    return " ".join(query)
