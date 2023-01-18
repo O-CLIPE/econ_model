@@ -1,16 +1,18 @@
 import mysql.connector # mysql-connector-python
 from getpass import getpass
+from exceptions import *
 
                     # 1. Defining database access and querying the market_and_entities.sql
-def access_info():
+def log_info():
     global host, user, password
 
     host = "localhost"; print(host)
     user = "root"; print(user)
     password = getpass("password: ")
-access_info()
 
-def query_schema():
+log_info()
+
+def build():
     with mysql.connector.connect(
         host=host,
         user=user,
@@ -20,77 +22,97 @@ def query_schema():
         with open("market_and_entities.sql") as query:
             with db.cursor() as cursor:
                 cursor.execute(query.read(), multi=True)
-query_schema()
+
+def drop():
+    with mysql.connector.connect(host=host, user=user, password=password) as db:
+        with db.cursor() as cursor:
+            cursor.execute("DROP SCHEMA `market`")
+            db.commit()
+
+def query_example():
+    with mysql.connector.connect(host=host, user=user, password=password) as db:
+        with open("example.sql") as query:
+            with db.cursor() as cursor:
+                cursor.execute(query.read(), multi=True)
 
                     # 2. Generalization
-def create_func(table: str, ordered_not_null_variables: tuple[str], *args, **kwargs) -> int:
+def create_func(table: str, unique_variables: list = [],  **kwargs) -> int | None:
     """Insert data into the market.{table} table.
     
     Query an INSERT statement with information provided by the arguments
     personalized for {table}
-    Only kwargs isn't required.
 
     Keyword arguments:
-    table: The table in wich to insert info.
-    ordered_not_null_variables: Keys that can't be null in kwargs. Ordered for the purpose of args
-    args: Information especified in ordered_not_null_variable declared in the same order.
+    unique_variables: Variables that are unique (like table_id and name). If None, function returns None.
+    table: The table in which to insert info.
     kwargs: Information especified with a key.
     """
+    if not isinstance(table, str):
+        raise TypeError(f"Expected str, got {type(table)}.")
+    if not isinstance(unique_variables, list):
+        raise TypeError(f"Expected list, got {type(unique_variables)}.")
+
     with mysql.connector.connect(host=host, user=user, password=password) as database:
-
-        for idx, var in enumerate(ordered_not_null_variables):
-            kwargs[var] = args[idx - 1]
-
         query = insert(table, kwargs)
+        print(query)
         with database.cursor() as cursor:
             cursor.execute(query)
             database.commit()
-        
-        with database.cursor() as cursor:
-            print({key: value for key, value in kwargs.items() if key in ordered_not_null_variables})
-            cursor.execute(select(table, {key: value for key, value in kwargs.items() if key in ordered_not_null_variables}, (f'{table}_id',)))
-            return cursor.fetchone()[0]
 
-def get_func(table: str, where={}, info=()) -> dict | list[tuple] | None:
+        if unique_variables:
+            with database.cursor() as cursor:
+                cursor.execute(select(table, {key: value for key, value in kwargs.items() if key in unique_variables},
+                    (f'{table}_id',)))
+                return cursor.fetchone()[0]
+
+def get_func(table: str, where: int | str | dict = {}, info: str | tuple[str] = (), infile=False) -> dict | list[tuple] | list[dict]:
     """Get information from the database related to the market.{table} table.
     
     If identification is given, return dict from a single {table}.
     Else return a list containing one tuple for each matching {table}.
-    If there are no arguments (besides table), print all entities information in file.
+    If there are no arguments (besides table), return all entities information as dictionaries.
 
     Keyword arguments:
-    table: The table in wich to get info from.
+    table: The table in which to get info from.
     where: Identification* or a common info** from entities. *int | str, return dict. **dict, return a list.
-    info: What you want from the entities that where specifies.
+    info: What you want from the entities that 'where' specifies.
     """
+    if not isinstance(table, str):
+        raise TypeError(f"Expected str, got {type(table)}.")
+
     if not isinstance(info, tuple):
         info = tuple((info,))
     with mysql.connector.connect(host=host, user=user, password=password) as database:
-        if not where and not info:
+        if where == {} and not info:
             query = select(table)
             with database.cursor(dictionary=True) as cursor:
                 cursor.execute(query)
-                foo = cursor.fetchall()
-                headings = tuple([key for key in foo[0]])
-                result = []
-                for d in foo:
-                    result.append(tuple([v for v in d.values()]))
-                print_in_file(table, result, 27, headings)
+                labeled = cursor.fetchall()
+                if infile:
+                    try:
+                        headings = tuple([key for key in labeled[0]])
+                    except IndexError:
+                        raise EmptyTableError("No default for empty table.")
+                    result = []
+                    for d in labeled:
+                        result.append(tuple([v for v in d.values()]))
+                    print_in_file(table, result, 27, headings)
+                return labeled
         elif isinstance(where, int):
             query = select(table, {f'{table}_id': where}, info)
             with database.cursor(dictionary=True) as cursor:
                 cursor.execute(query)
-                return cursor.fetchone()
+                return cursor.fetchone() # dict
         elif isinstance(where, str):
             query = select(table, {'name': where}, info)
             with database.cursor(dictionary=True) as cursor:
                 cursor.execute(query)
-                return cursor.fetchone()
+                return cursor.fetchone() # dict
         elif isinstance(where, dict):
             query = select(table, where, info)
             with database.cursor() as cursor:
                 cursor.execute(query)
-                result = cursor.fetchall()
+                result = cursor.fetchall() # list[tuple]
                 return result
 
 
@@ -102,10 +124,17 @@ def set_func(table: str, identifier: str | int = None, **kwargs):
     All arguments are REQUIRED.
 
     Keyword arguments:
-    table: The table in wich to set info to.
+    table: The table in which to set info to.
     identifier: 'name' if string, '{table}_id' if int.
     kwargs: The information to update the table.
     """
+    if not isinstance(table, str):
+        raise TypeError(f"Expected str, got {type(table)}.")
+    for type_ in (str, int, None):
+        if not (isinstance(identifier, type_)):
+            raise TypeError(f"Expected str, int or None, got {type(identifier)}")
+
+
     with mysql.connector.connect(host=host, user=user, password=password) as database:
         for key, value in kwargs.copy().items():
             if value is None:
@@ -125,57 +154,62 @@ def set_func(table: str, identifier: str | int = None, **kwargs):
             cursor.execute(query)
             database.commit()
 
-                    # 3.Table/Class especific
+                    # 3. Table/Class specific
 def create_entity(name, **kwargs) -> int:
     """Call create_func with table='entity'.
 
     Keywords -> name, income, expenses, value"""
-    create_func('entity', ('name',), name, **kwargs)
+    kwargs['name'] = name
+    return create_func('entity', ['name', 'entity_id'], **kwargs)
 
 def set_entity(identifier: int | str = None, **kwargs):
     # identifier -> name or id
     # keywords -> income, expenses, value
-    set_func('entity', identifier, **kwargs)
+    return set_func('entity', identifier, **kwargs)
             
-def get_entity(where={}, info=()) -> dict | list | None:
+def get_entity(where: int | str | dict = {}, info: str | tuple[str] = ()) -> dict | list:
     # columns -> id, name, income, expenses, value
-    get_func('entity', where, info)
+    return get_func('entity', where, info)
 
 
-def create_product(producer_id: int, good_id: int, **kwargs):
+def create_product(producer_id: int, good_id: int, name: str, **kwargs) -> int:
     """Call create_func with table='entity'.
 
     Keywords -> name, income, expenses, value"""
     # keywords -> name, income, expenses, value
-    create_func('product', ('producer_id', 'good_id'), producer_id, good_id, **kwargs)
+    kwargs['producer_id'] = producer_id
+    kwargs['good_id'] = good_id
+    kwargs['name'] = name
+    return create_func('product', ['producer_id', 'good_id', 'name'], **kwargs)
 
 def set_product(identifier: int | str, **kwargs):
     # identifier -> name or id
     # keywords -> name, value, price, supply
-    set_func('product', identifier, **kwargs)
+    return set_func('product', identifier, **kwargs)
 
-def get_product(where={}, info=()) -> dict | list | None:
+def get_product(where: int | str | dict = {}, info: str | tuple[str] = ()) -> dict | list:
     # columns -> good_id, entity_id, id, name, value, price, supply
-    get_func('product', where, info)
+    return get_func('product', where, info)
 
 
-def create_good(name: str, **kwargs):
+def create_good(name: str, **kwargs) -> int:
     # keywords -> name, value, price
-   create_func('good', ('name',), name, **kwargs)
+    kwargs['name'] = name
+    return create_func('good', ['good_id', 'name'],**kwargs)
 
 def set_good(identifier: int | str, **kwargs):
     # identifier -> name or id
     # keywords -> name, price
-    set_func('product', identifier, **kwargs)
+    return set_func('product', identifier, **kwargs)
 
-def get_good(where={}, info=()) -> dict | list[tuple] | None:
+def get_good(where: int | str | dict = {}, info: str | tuple[str] = ()) -> dict | list:
     # columns -> id, name, income, expenses, value
-    get_func('good', where, info)
+    return get_func('good', where, info)
 
 
                     # 4.Representation of data in file
 def print_in_file(filename: str, data: list, column_size_limit: int, headings: tuple):
-    """Writes in filename.dbtxt the data with headings and custom column_size"""
+    """Writes in filename.dbtxt the data with headings and custom column_size."""
     with open(f"{filename}.dbtxt", "w") as f:
         f.write("-- This was an automatically generated file. --\nData: ")
         for idx, head in enumerate(headings):
@@ -222,7 +256,7 @@ def abbreviate(text: str, limit: int) -> str:
 
 
                     # 5.TO SQL
-def select(table: str, condition: dict = {}, columns: tuple = ()) -> str:
+def select(table: str, condition: dict = {}, columns: tuple[str] = ()) -> str:
     """Create a SELECT statement in SQL for querying."""
     query = ["SELECT", None, "FROM", None, "WHERE", None, ";"]
     temp = []
@@ -239,7 +273,7 @@ def select(table: str, condition: dict = {}, columns: tuple = ()) -> str:
     else:
         for key, value in condition.items():
             temp.append(f"`{key}` = {value!r}")
-        query[5] = ", ".join(temp)
+        query[5] = " AND ".join(temp)
 
     return " ".join(query)
 
@@ -273,5 +307,22 @@ def update(table: str, info: dict, condition: dict = {}) -> str:
     else:
         for key, value in condition.items():
             temp.append(f"`{key}` = {repr(value)}")
-        query[5] = ", ".join(temp)
+        query[5] = " AND ".join(temp)
     return " ".join(query)
+
+
+                    # 6. Consume
+
+def create_buy(entity_id: int, product_id: int, quantity: int, price: float = None) -> int:
+    if price is None:
+        price = get_product(product_id, 'price')['price']
+    return create_func('buy', consumer_id=entity_id, product_id=product_id, price=price,
+         quantity=quantity, is_asset=quantity)
+
+def get_buy(where: int | str | dict = {}, info: str | tuple[str] = ()) -> dict | list[tuple] | None:
+    if isinstance(where, int):
+        where = {'index': where}
+    return get_func('buy', where, info)
+
+def set_buy(index: int = None, **kwargs):
+    return set_func('buy', index, **kwargs)
